@@ -103,6 +103,13 @@ do_install() {
   else
     warn ".env existente preservado (edite com: sudo nano $INSTALL_DIR/.env)"
   fi
+  # sanitizar .env legado: systemd nao aceita comentario inline apos o valor
+  if grep -qE '^[A-Z_]+=[^#]*#' "$INSTALL_DIR/.env"; then
+    cp "$INSTALL_DIR/.env" "$INSTALL_DIR/.env.bak.$(date +%s)"
+    sed -i 's/[[:space:]]*#.*$//' "$INSTALL_DIR/.env"
+    warn "Comentários inline removidos do .env (systemd não os suporta). Backup criado."
+  fi
+
   # bind: 127.0.0.1 quando o Zabbix roda neste mesmo servidor (recomendado)
   if ! grep -q '^AINOC_BIND_HOST=' "$INSTALL_DIR/.env"; then
     read -rp "O Zabbix server roda NESTE mesmo servidor? [S/n]: " local_zbx
