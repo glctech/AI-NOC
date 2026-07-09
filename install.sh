@@ -17,6 +17,7 @@
 #   ainoc status | logs | restart
 #===============================================================================
 set -euo pipefail
+export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"
 
 INSTALL_DIR="/opt/ai-noc-analyst"
 SERVICE_NAME="ainoc"
@@ -71,7 +72,13 @@ do_install() {
   check_deps
 
   id -u "$SERVICE_USER" &>/dev/null || {
-    useradd --system --home-dir "$INSTALL_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
+    if command -v useradd >/dev/null; then
+      useradd --system --home-dir "$INSTALL_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
+    elif command -v adduser >/dev/null; then
+      adduser --system --group --home "$INSTALL_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
+    else
+      die "Nem useradd nem adduser encontrados no PATH."
+    fi
     ok "Usuário de serviço '$SERVICE_USER' criado."
   }
 
@@ -95,6 +102,21 @@ do_install() {
     configure_env
   else
     warn ".env existente preservado (edite com: sudo nano $INSTALL_DIR/.env)"
+  fi
+  # bind: 127.0.0.1 quando o Zabbix roda neste mesmo servidor (recomendado)
+  if ! grep -q '^AINOC_BIND_HOST=' "$INSTALL_DIR/.env"; then
+    read -rp "O Zabbix server roda NESTE mesmo servidor? [S/n]: " local_zbx
+    if [[ "${local_zbx,,}" == "n" ]]; then
+      echo "AINOC_BIND_HOST=0.0.0.0" >> "$INSTALL_DIR/.env"
+      warn "Serviço exposto em todas as interfaces (porta ${PORT})."
+      warn "Restrinja no firewall à origem do Zabbix, ex.:"
+      warn "  nft add rule inet filter input ip saddr <IP_ZABBIX> tcp dport ${PORT} accept"
+      warn "  (ou: ufw allow from <IP_ZABBIX> to any port ${PORT} proto tcp)"
+    else
+      echo "AINOC_BIND_HOST=127.0.0.1" >> "$INSTALL_DIR/.env"
+      ok "Bind em 127.0.0.1 — porta ${PORT} inacessível pela internet."
+      ok "No media type do Zabbix use: http://127.0.0.1:${PORT}/webhook/zabbix"
+    fi
   fi
   chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
   chmod 600 "$INSTALL_DIR/.env"
@@ -171,7 +193,7 @@ EnvironmentFile=${INSTALL_DIR}/.env
 Environment=PYTHONPATH=${INSTALL_DIR}/src
 Environment=HOME=${INSTALL_DIR}
 Environment=PATH=/usr/local/bin:/usr/bin:/bin:${INSTALL_DIR}/.local/bin
-ExecStart=${INSTALL_DIR}/.venv/bin/uvicorn ainoc.main:app --host 0.0.0.0 --port ${PORT}
+ExecStart=${INSTALL_DIR}/.venv/bin/uvicorn ainoc.main:app --host \${AINOC_BIND_HOST} --port ${PORT}
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
