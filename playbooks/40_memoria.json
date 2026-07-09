@@ -1,0 +1,29 @@
+{
+  "id": "memoria",
+  "nome": "Memória Alta / Esgotada",
+  "match": {"name_regex": "mem[oó]ria|memory|swap|oom"},
+  "verificacoes": [
+    "Diferenciar memoria realmente usada de cache/buffers (available vs free)",
+    "Identificar processos com maior RSS e verificar crescimento continuo (leak)",
+    "Checar uso de swap e eventos OOM killer no kernel",
+    "Correlacionar com deploy recente ou aumento de carga"
+  ],
+  "comandos": [
+    "free -h",
+    "ps aux --sort=-rss | head -15",
+    "dmesg -T | grep -i 'out of memory' | tail -5",
+    "smem -rk 2>/dev/null | head -15 || cat /proc/meminfo | head -10"
+  ],
+  "evidencias_esperadas": [
+    "MemAvailable baixo com swap crescendo confirma pressao real de memoria",
+    "OOM killer no dmesg indica esgotamento efetivo",
+    "RSS de um processo crescendo linearmente sugere memory leak"
+  ],
+  "criterios_escalonamento": {
+    "n1_para_n2": "Pressao real de memoria confirmada sem processo dispensavel obvio",
+    "n2_para_n3": "Suspeita de memory leak em aplicacao ou necessidade de redimensionamento"
+  },
+  "criterios_encerramento": [
+    "MemAvailable > 15% e swap estavel por 20 minutos"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "id": "icmp",
+  "nome": "Perda de ICMP / Ping",
+  "match": {"name_regex": "icmp|ping|packet loss|perda de pacote"},
+  "verificacoes": [
+    "Medir perda e latencia de origem alternativa para isolar o trecho",
+    "Verificar se a perda e total (host down) ou parcial (degradacao de rede)",
+    "Checar interfaces do equipamento intermediario (erros, descartes, saturacao)",
+    "Verificar mudancas recentes de rede (firewall, roteamento, QoS)"
+  ],
+  "comandos": [
+    "mtr -rwc 50 <IP_DO_HOST>",
+    "ping -c 100 -i 0.2 <IP_DO_HOST> | tail -3",
+    "ip route get <IP_DO_HOST>"
+  ],
+  "evidencias_esperadas": [
+    "MTR mostrando em qual salto comeca a perda",
+    "Perda intermitente sugere saturacao; perda total sugere queda de enlace"
+  ],
+  "criterios_escalonamento": {
+    "n1_para_n2": "Perda persistente > 5% por 15 min sem causa evidente",
+    "n2_para_n3": "Problema no backbone/operadora ou necessidade de mudanca de topologia"
+  },
+  "criterios_encerramento": [
+    "Perda < 1% e latencia normal por 15 minutos"
+  ]
+}

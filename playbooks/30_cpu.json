@@ -1,0 +1,30 @@
+{
+  "id": "cpu",
+  "nome": "CPU Alta",
+  "match": {"name_regex": "cpu"},
+  "verificacoes": [
+    "Identificar o(s) processo(s) que consomem CPU e desde quando",
+    "Distinguir pico pontual, crescimento gradual e flapping ciclico",
+    "Correlacionar com deploys, crons, backups e picos de trafego",
+    "Verificar load average vs numero de nucleos e iowait (CPU real vs espera de disco)"
+  ],
+  "comandos": [
+    "top -b -n 1 | head -25",
+    "ps aux --sort=-%cpu | head -15",
+    "uptime && nproc",
+    "vmstat 1 5",
+    "crontab -l; ls /etc/cron.d/"
+  ],
+  "evidencias_esperadas": [
+    "Processo especifico dominando o consumo aponta causa aplicacional",
+    "iowait alto redireciona a investigacao para disco/storage",
+    "Padrao ciclico nos graficos sugere job agendado"
+  ],
+  "criterios_escalonamento": {
+    "n1_para_n2": "CPU > 90% sustentada por 15 min sem processo obvio ou apos matar/reiniciar o processo o consumo retorna",
+    "n2_para_n3": "Necessidade de profiling de aplicacao, ajuste de capacidade ou bug de software"
+  },
+  "criterios_encerramento": [
+    "CPU abaixo do limiar por 15 minutos e causa identificada/registrada"
+  ]
+}

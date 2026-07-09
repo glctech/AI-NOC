@@ -1,0 +1,28 @@
+{
+  "id": "disco",
+  "nome": "Disco Cheio / Crescimento Anormal",
+  "match": {"name_regex": "disco|disk|vfs\\.fs|filesystem|space|inode"},
+  "verificacoes": [
+    "Identificar o filesystem afetado e o que mais cresceu recentemente",
+    "Checar inodes alem de espaco (df -i)",
+    "Procurar logs sem rotacao, dumps, arquivos temporarios e arquivos deletados ainda abertos",
+    "Estimar velocidade de crescimento (tempo ate 100%)"
+  ],
+  "comandos": [
+    "df -h; df -i",
+    "du -xhd1 /var 2>/dev/null | sort -rh | head -10",
+    "find / -xdev -size +500M -mtime -2 2>/dev/null | head",
+    "lsof +L1 2>/dev/null | head -10"
+  ],
+  "evidencias_esperadas": [
+    "Diretorio especifico concentrando o crescimento aponta o responsavel",
+    "lsof +L1 com arquivos grandes indica espaco preso por processo (resolver com restart, nao rm)"
+  ],
+  "criterios_escalonamento": {
+    "n1_para_n2": "Uso > 90% e crescimento continuo sem arquivo obvio para limpeza segura",
+    "n2_para_n3": "Necessidade de expansao de storage/LVM ou mudanca de retencao"
+  },
+  "criterios_encerramento": [
+    "Uso abaixo do limiar, causa do crescimento tratada (rotacao/limpeza/expansao)"
+  ]
+}

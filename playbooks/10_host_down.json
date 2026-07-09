@@ -1,0 +1,29 @@
+{
+  "id": "host_down",
+  "nome": "Host Down",
+  "match": {"name_regex": "host.*(down|indispon|unavailable|unreachable)"},
+  "verificacoes": [
+    "Confirmar indisponibilidade por segundo caminho (ping de outra origem, console/iLO/iDRAC)",
+    "Verificar se ha manutencao programada ou mudanca recente no host",
+    "Verificar se outros hosts do mesmo segmento/switch/gateway tambem cairam (falha de rede vs falha do host)",
+    "Checar ultimo dado recebido pelo Zabbix (agente, SNMP, ICMP) e ha quanto tempo"
+  ],
+  "comandos": [
+    "ping -c 4 <IP_DO_HOST>",
+    "traceroute <IP_DO_HOST>",
+    "arp -an | grep <IP_DO_HOST>",
+    "zabbix_get -s <IP_DO_HOST> -k agent.ping"
+  ],
+  "evidencias_esperadas": [
+    "Perda de pacotes 100% de multiplas origens confirma queda real",
+    "Traceroute parando no gateway indica problema de rede, nao do host"
+  ],
+  "criterios_escalonamento": {
+    "n1_para_n2": "Host confirmado inacessivel por 2 caminhos e sem manutencao programada",
+    "n2_para_n3": "Falha de hardware, corrupcao de boot ou incidente afetando multiplos hosts/infraestrutura"
+  },
+  "criterios_encerramento": [
+    "Host responde ICMP e agente/SNMP por 10 minutos consecutivos",
+    "Causa registrada no incidente"
+  ]
+}
