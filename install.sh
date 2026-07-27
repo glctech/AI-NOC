@@ -51,18 +51,44 @@ verify_manifest() {
 }
 
 #--------------------------------------------------------------- dependências
+pkg_install() {
+  # instala pacotes na distro detectada (Debian/Ubuntu ou RHEL/Rocky/Alma/Oracle)
+  if command -v apt-get >/dev/null; then
+    apt-get update -qq && apt-get install -y -qq "$@"
+  elif command -v dnf >/dev/null; then
+    dnf install -y -q "$@"
+  elif command -v yum >/dev/null; then
+    yum install -y -q "$@"
+  else
+    die "Nenhum gerenciador de pacotes suportado (apt/dnf/yum)."
+  fi
+}
+
 check_deps() {
-  command -v python3 >/dev/null || die "python3 não encontrado. apt install python3"
+  if [[ -f /etc/os-release ]]; then
+    . /etc/os-release
+    ok "Sistema: ${PRETTY_NAME:-desconhecido}"
+  fi
+  command -v python3 >/dev/null || pkg_install python3
   local pyver
   pyver=$(python3 -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')
   python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' \
     || die "Python >= 3.10 é necessário (encontrado: $pyver)."
   ok "Python $pyver"
   if ! python3 -m venv --help >/dev/null 2>&1; then
-    echo "[i] Instalando python3-venv..."
-    apt-get update -qq && apt-get install -y -qq python3-venv python3-pip
+    echo "[i] Instalando suporte a venv..."
+    if command -v apt-get >/dev/null; then
+      pkg_install python3-venv python3-pip
+    else
+      pkg_install python3-pip   # em RHEL o venv acompanha o python3
+    fi
   fi
-  command -v curl >/dev/null || apt-get install -y -qq curl
+  command -v curl >/dev/null || pkg_install curl
+  # RHEL com firewalld: avisar como liberar a porta se o bind for externo
+  if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
+    warn "firewalld ativo. Se usar AINOC_BIND_HOST=0.0.0.0, libere a porta só p/ o Zabbix:"
+    warn "  firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=<IP_ZABBIX> port port=${PORT} protocol=tcp accept' && firewall-cmd --reload"
+  fi
 }
 
 #--------------------------------------------------------------- instalação
@@ -132,12 +158,15 @@ do_install() {
   install_cli
 
   systemctl restart "$SERVICE_NAME"
-  sleep 2
-  if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
-    ok "Serviço no ar: http://$(hostname -I | awk '{print $1}'):${PORT}/health"
+  local up=false
+  for _ in $(seq 1 24); do
+    if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then up=true; break; fi
+    sleep 0.5
+  done
+  if $up; then
+    ok "Serviço no ar (porta ${PORT})."
   else
-    warn "Serviço iniciado mas /health ainda não respondeu."
-    warn "Veja os logs: journalctl -u $SERVICE_NAME -f"
+    warn "Serviço não respondeu em 12s. Veja: journalctl -u $SERVICE_NAME -n 30"
   fi
 
   if grep -q '^AINOC_AI_PROVIDER=claude_code' "$INSTALL_DIR/.env"; then
@@ -157,12 +186,15 @@ do_install() {
 ============================================================
  Instalação concluída!
 
- Próximos passos no laboratório:
-   1. ainoc seed                    # cria hosts/triggers e o API token
-   2. sudo nano $INSTALL_DIR/.env   # cole o AINOC_ZABBIX_TOKEN gerado
+ Próximos passos:
+   1. ainoc seed --token-only --user <usuario> --password '<senha>'
+      (sem --token-only cria também os hosts de laboratório)
+   2. ainoc token <valor_exibido_pelo_seed>
    3. ainoc restart
-   4. Configure o media type no Zabbix (docs/zabbix-setup.md)
-   5. ainoc simulate cpu lab-web-01 # dispara um problem de teste
+   4. Media type + action no Zabbix (docs/zabbix-setup.md)
+      URL do webhook: http://127.0.0.1:${PORT}/webhook/zabbix
+   5. Teste: ainoc simulate cpu lab-web-01   (se criou o lab)
+   6. Atribua alertas: ainoc atribuir <eventid> <usuario>
 ============================================================
 EOF
 }
@@ -242,14 +274,45 @@ case "${1:-help}" in
               -d "{\"eventid\":\"$evid\",\"hipotese_correta\":$h,\"causa_real\":\"$causa\",\"solucao\":\"$sol\",\"adicionar_kb\":$addkb}" && echo ;;
   status)   systemctl status ainoc --no-pager ;;
   logs)     journalctl -u ainoc -f ;;
-  restart)  sudo systemctl restart ainoc && echo "reiniciado." ;;
-  health)   curl -fsS http://127.0.0.1:8000/health && echo ;;
+  restart)  sudo systemctl restart ainoc
+            printf "aguardando o serviço"
+            for _ in $(seq 1 24); do
+              if curl -fsS http://127.0.0.1:8000/health >/dev/null 2>&1; then
+                echo " ok"; curl -fsS http://127.0.0.1:8000/health; echo; exit 0
+              fi
+              printf "."; sleep 0.5
+            done
+            echo; echo "não respondeu em 12s — veja: ainoc logs"; exit 1 ;;
+  health)   for _ in $(seq 1 8); do
+              if out=$(curl -fsS http://127.0.0.1:8000/health 2>/dev/null); then
+                echo "$out"; exit 0
+              fi; sleep 0.5
+            done
+            echo "sem resposta em http://127.0.0.1:8000/health — veja: ainoc logs"; exit 1 ;;
+  env)      [[ "${2:-}" == "set" && -n "${3:-}" ]] || { echo "uso: ainoc env set CHAVE VALOR"; exit 1; }
+            key="$3"; val="${4:-}"
+            if sudo grep -q "^${key}=" "$DIR/.env"; then
+              sudo sed -i "s|^${key}=.*|${key}=${val}|" "$DIR/.env"
+            else
+              echo "${key}=${val}" | sudo tee -a "$DIR/.env" >/dev/null
+            fi
+            echo "${key} atualizado. Aplique com: ainoc restart" ;;
+  atribuir) evid="${2:?uso: ainoc atribuir <eventid> <usuario>}"
+            usr="${3:?uso: ainoc atribuir <eventid> <usuario>}"
+            curl -fsS -X POST http://127.0.0.1:8000/assign \
+              -H 'Content-Type: application/json' \
+              -d "{\"eventid\":\"$evid\",\"usuario\":\"$usr\"}" && echo ;;
+  token)    v="${2:?uso: ainoc token <valor_do_token>}"
+            exec /usr/local/bin/ainoc env set AINOC_ZABBIX_TOKEN "$v" ;;
   *) cat <<HLP
 Uso: ainoc <comando>
   seed [--url URL --user U --password P]   popula o laboratorio Zabbix
   simulate <cpu|disk|down|recover> [host]  dispara/resolve problem de teste
+  token <valor>                            grava o token do Zabbix no .env
+  env set CHAVE VALOR                      edita o .env com segurança
   kb [status|reindex]                      base de conhecimento (RAG)
   feedback <eventid> [sim|nao] [causa] [solucao] [--kb]  aprendizado
+  atribuir <eventid> <usuario>             registra o responsável pelo alerta
   status | logs | restart | health         gerencia o servico
 HLP
   ;;

@@ -20,6 +20,7 @@ class ZabbixClient:
         self._id = itertools.count(1)
         self._client = httpx.AsyncClient(
             timeout=timeout,
+            follow_redirects=True,  # frontends atrás de proxy/porta alternativa
             headers={
                 "Content-Type": "application/json-rpc",
                 "Authorization": f"Bearer {token}",
@@ -52,7 +53,10 @@ class ZabbixClient:
                 logger.warning("Falha em %s (tentativa %d/%d): %s",
                                method, attempt, self._retries, exc)
                 await asyncio.sleep(min(2 ** attempt, 8))
-        raise ZabbixAPIError(f"{method} falhou após {self._retries} tentativas") from last_exc
+        raise ZabbixAPIError(
+            f"{method} falhou após {self._retries} tentativas "
+            f"(causa: {type(last_exc).__name__}: {last_exc}) — "
+            f"verifique AINOC_ZABBIX_URL ({self._url})") from last_exc
 
     # ---- atalhos usados pelo pipeline ----
 

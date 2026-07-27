@@ -4,6 +4,7 @@ Fluxo: Zabbix webhook media type → POST /webhook/zabbix → fila asyncio →
 coleta de contexto → primeira análise (IA) → ACK no evento.
 """
 import asyncio
+import hmac
 import logging
 from contextlib import asynccontextmanager
 
@@ -33,7 +34,15 @@ class ZabbixWebhookPayload(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = get_settings()
+    try:
+        settings = get_settings()
+    except Exception as exc:
+        logging.basicConfig(level="ERROR")
+        logger.error(
+            "CONFIGURAÇÃO INVÁLIDA no .env — corrija e reinicie. Detalhe: %s. "
+            "Dica: sem comentários na mesma linha do valor; use "
+            "'ainoc env set CHAVE VALOR' para editar com segurança.", exc)
+        raise
     logging.basicConfig(
         level=settings.log_level,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -53,8 +62,11 @@ async def lifespan(app: FastAPI):
     app.state.store = IncidentStore(settings.db_path)
     app.state.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=500)
     app.state.worker = asyncio.create_task(_worker(app))
+    if not settings.zabbix_token:
+        logger.warning("AINOC_ZABBIX_TOKEN vazio — a coleta de contexto vai "
+                       "falhar. Configure com: ainoc token <valor>")
     logger.info("AI NOC Analyst iniciado (provider=%s model=%s)",
-                settings.ai_provider, settings.ai_model)
+                settings.ai_provider, settings.ai_model or "(padrão)")
     yield
     app.state.worker.cancel()
     await zabbix.close()
@@ -92,7 +104,14 @@ async def process_event(app: FastAPI, eventid: str) -> None:
             eventid, trigger_key, deb.seconds_remaining(trigger_key))
         return
     deb.mark(trigger_key)
+    try:
+        await _analyze_and_ack(app, eventid, ctx)
+    except Exception:
+        deb.unmark(trigger_key)  # falhou: não punir o trigger por 10 min
+        raise
 
+
+async def _analyze_and_ack(app: FastAPI, eventid: str, ctx) -> None:
     related = await app.state.correlation.correlate(ctx)
     if related:
         logger.info("Evento %s correlacionado com %d problem(s): %s",
@@ -124,8 +143,12 @@ async def process_event(app: FastAPI, eventid: str) -> None:
 
     analysis = await app.state.analysis.analyze(
         ctx, related, playbook, kb_excerpts, similar)
+    # campo canônico: o playbook foi selecionado por regra, não pelo modelo
+    analysis.playbook_aplicado = playbook.nome if playbook else ""
     message = format_ack(analysis)
     await app.state.zabbix.acknowledge(eventid, message)
+    status = ("falha" if analysis.resumo_executivo.startswith(
+        "Falha ao gerar análise automática") else "ok")
     await app.state.store.save_incident(
         eventid,
         ctx.host.get("name", ""),
@@ -133,14 +156,108 @@ async def process_event(app: FastAPI, eventid: str) -> None:
         ctx.event.get("severity", ""),
         analysis.model_dump() if hasattr(analysis, "model_dump")
         else analysis.__dict__,
+        objectid=ctx.event.get("objectid", ""),
+        status=status,
     )
     logger.info("ACK publicado no evento %s (confiança=%d%% nível=%s)",
                 eventid, analysis.confianca_pct, analysis.nivel_recomendado)
+    if analysis.resumo_executivo.startswith("Falha ao gerar análise automática"):
+        # análise não aconteceu de fato: liberar o trigger para retry imediato
+        app.state.debouncer.unmark(ctx.event.get("objectid", ""))
+        logger.info("Debounce liberado para o trigger do evento %s "
+                    "(análise falhou)", eventid)
 
 
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "queue_size": app.state.queue.qsize()}
+
+
+@app.get("/api/incidents")
+async def api_incidents(limit: int = 20) -> dict:
+    """Incidentes recentes para o dashboard/módulo Zabbix."""
+    incidents = await app.state.store.recent(min(max(limit, 1), 100))
+    stats = await app.state.store.stats()
+    conf = [i["confianca_pct"] for i in incidents
+            if i["confianca_pct"] and i.get("status") == "ok"]
+    return {"incidents": incidents,
+            "confianca_media": round(sum(conf) / len(conf)) if conf else 0,
+            **stats}
+
+
+@app.get("/api/kb/docs")
+async def api_kb_docs() -> dict:
+    """Documentos da base de conhecimento com contagem de trechos."""
+    docs: dict[str, int] = {}
+    for c in app.state.kb._chunks:
+        docs[c.source] = docs.get(c.source, 0) + 1
+    return {"docs": [{"nome": k, "trechos": v} for k, v in sorted(docs.items())],
+            "total_chunks": app.state.kb.size}
+
+
+@app.get("/api/kb/learnings")
+async def api_kb_learnings(limit: int = 8) -> dict:
+    return {"learnings": await app.state.store.learnings(min(max(limit, 1), 30))}
+
+
+@app.get("/api/kb/search")
+async def api_kb_search(q: str) -> dict:
+    return {"resultados": app.state.kb.search(q, 5)}
+
+
+class ReanalyzePayload(BaseModel):
+    eventid: str
+
+
+@app.post("/reanalyze", status_code=202)
+async def reanalyze(payload: ReanalyzePayload) -> dict:
+    """Reprocessa um evento (ex.: análise anterior falhou)."""
+    incident = await app.state.store.get_incident(payload.eventid)
+    objectid = (incident or {}).get("objectid", "")
+    if not objectid:
+        event = await app.state.zabbix.get_event(payload.eventid)
+        if not event:
+            raise HTTPException(status_code=404,
+                                detail=f"evento {payload.eventid} não encontrado")
+        objectid = event.get("objectid", "")
+    app.state.debouncer.unmark(objectid)
+    try:
+        app.state.queue.put_nowait(payload.eventid)
+    except asyncio.QueueFull:
+        raise HTTPException(status_code=503, detail="queue full") from None
+    logger.info("Evento %s reenfileirado para reanálise", payload.eventid)
+    return {"accepted": True, "eventid": payload.eventid}
+
+
+class AssignPayload(BaseModel):
+    eventid: str
+    usuario: str
+
+
+@app.post("/assign")
+async def assign(payload: AssignPayload) -> dict:
+    """Atribui a tratativa de um alerta a um usuário (accountability)."""
+    incident = await app.state.store.get_incident(payload.eventid)
+    event = None
+    if not incident:
+        event = await app.state.zabbix.get_event(payload.eventid)
+        if not event:
+            raise HTTPException(
+                status_code=404,
+                detail=f"evento {payload.eventid} não encontrado")
+    await app.state.store.assign(payload.eventid, payload.usuario)
+    ack_ok = True
+    try:
+        await app.state.zabbix.acknowledge(
+            payload.eventid,
+            f"[NOC AI] Atribuído a: {payload.usuario} — responsável pela "
+            f"tratativa deste alerta.")
+    except Exception:  # atribuição vale mesmo se o ACK falhar
+        ack_ok = False
+        logger.exception("ACK de atribuição falhou para %s", payload.eventid)
+    logger.info("Evento %s atribuído a %s", payload.eventid, payload.usuario)
+    return {"assigned": True, "eventid": payload.eventid,
+            "usuario": payload.usuario, "ack_publicado": ack_ok}
 
 
 class FeedbackPayload(BaseModel):
@@ -170,22 +287,47 @@ async def feedback(payload: FeedbackPayload) -> dict:
     if not saved:
         raise HTTPException(status_code=404,
                             detail=f"incidente {payload.eventid} não encontrado")
+
+    # sincronizar o encerramento no próprio evento (fonte única de verdade)
+    responsavel = await app.state.store.get_assignee(payload.eventid) or "n/d"
+    veredicto = ("hipótese da IA CONFIRMADA" if payload.hipotese_correta
+                 else "hipótese da IA REFUTADA"
+                 if payload.hipotese_correta is False else "hipótese não avaliada")
+    linhas = [f"[NOC AI] Incidente encerrado — {veredicto}."]
+    if payload.causa_real:
+        linhas.append(f"CAUSA REAL: {payload.causa_real}")
+    if payload.solucao:
+        linhas.append(f"SOLUÇÃO APLICADA: {payload.solucao}")
+    linhas.append(f"Responsável pela tratativa: {responsavel}")
+    if payload.adicionar_kb:
+        linhas.append("Registrado na base de conhecimento.")
+    ack_publicado = True
+    try:
+        await app.state.zabbix.acknowledge(
+            payload.eventid, "\n".join(linhas)[:2048])
+    except Exception:  # feedback vale mesmo se o ACK falhar
+        ack_publicado = False
+        logger.exception("ACK de encerramento falhou para %s", payload.eventid)
+
     note_path = None
     if payload.adicionar_kb:
         incident = await app.state.store.get_incident(payload.eventid)
         confirmada = ("sim" if payload.hipotese_correta
                       else "não" if payload.hipotese_correta is False else "n/d")
+        tratado_por = await app.state.store.get_assignee(payload.eventid) or "n/d"
         note = (
             f"# Aprendizado — evento {payload.eventid}\n\n"
             f"- Trigger: {incident['trigger_name']}\n"
             f"- Host: {incident['host']}\n"
+            f"- Tratado por: {tratado_por}\n"
             f"- Hipótese da IA confirmada: {confirmada}\n\n"
             f"## Causa real\n{payload.causa_real or 'n/d'}\n\n"
             f"## Solução aplicada\n{payload.solucao or 'n/d'}\n"
         )
         note_path = str(app.state.kb.add_note(
             f"evento_{payload.eventid}.md", note))
-    return {"saved": True, "kb_note": note_path}
+    return {"saved": True, "kb_note": note_path,
+            "ack_publicado": ack_publicado}
 
 
 @app.post("/webhook/zabbix", status_code=202)
@@ -194,8 +336,14 @@ async def zabbix_webhook(
     x_ainoc_secret: str = Header(default=""),
 ) -> dict:
     settings = app.state.settings
-    if settings.webhook_shared_secret and x_ainoc_secret != settings.webhook_shared_secret:
+    if settings.webhook_shared_secret and not hmac.compare_digest(
+            x_ainoc_secret, settings.webhook_shared_secret):
         raise HTTPException(status_code=401, detail="invalid secret")
+    if not payload.eventid.isdigit():
+        logger.info("Webhook com eventid não numérico (%r) — provável teste "
+                    "do media type; ignorando.", payload.eventid[:40])
+        return {"accepted": False,
+                "reason": "eventid não numérico (macro não resolvida no teste)"}
     try:
         app.state.queue.put_nowait(payload.eventid)
     except asyncio.QueueFull:

@@ -1,0 +1,28 @@
+{
+  "id": "rede_flood",
+  "nome": "Flood / DDoS de Rede",
+  "match": {"name_regex": "flood|ddos|bandwidth|trafego anormal|traffic anomaly|mikrotik.*(flood|bandwidth)"},
+  "verificacoes": [
+    "Confirmar se o pico e trafego legitimo (backup, sincronizacao, evento de negocio) antes de tratar como ataque",
+    "Identificar direcao (entrada/saida), interface afetada e top talkers (origem/destino, portas, protocolo)",
+    "Verificar se o alvo e um host especifico ou o enlace inteiro; medir impacto em latencia/perda para servicos",
+    "Checar se ha padrao conhecido: UDP amplification, SYN flood, scan massivo"
+  ],
+  "comandos": [
+    "No MikroTik: /interface monitor-traffic <iface> once",
+    "/ip firewall connection print count-only",
+    "/tool torch <iface> (top talkers em tempo real)",
+    "/ip firewall filter print stats (regras de drop batendo?)"
+  ],
+  "evidencias_esperadas": [
+    "Poucas origens com volume desproporcional sugere abuso/ataque direto; origens distribuidas sugerem DDoS ou trafego legitimo em massa",
+    "Contagem de conexoes explodindo com pacotes pequenos indica flood; trafego alto com conexoes estaveis indica transferencia legitima"
+  ],
+  "criterios_escalonamento": {
+    "n1_para_n2": "Trafego anomalo confirmado (nao legitimo) ou saturacao de enlace impactando servicos",
+    "n2_para_n3": "Necessidade de mitigacao upstream (operadora/blackhole/scrubbing) ou mudanca de arquitetura de borda"
+  },
+  "criterios_encerramento": [
+    "Trafego de volta a linha de base por 30 min, origem identificada e registrada, mitigacao documentada"
+  ]
+}

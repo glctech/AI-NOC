@@ -27,6 +27,10 @@ class Debouncer:
             self._evict()
         self._seen[key] = time.monotonic()
 
+    def unmark(self, key: str) -> None:
+        """Libera o trigger (ex.: análise falhou; permitir novo processamento)."""
+        self._seen.pop(key, None)
+
     def seconds_remaining(self, key: str) -> int:
         last = self._seen.get(key)
         if last is None:

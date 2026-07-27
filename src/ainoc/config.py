@@ -6,7 +6,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="AINOC_")
+    # extra="ignore": variáveis desconhecidas no .env (ex.: usadas só pela
+    # unit do systemd) não derrubam o serviço
+    model_config = SettingsConfigDict(env_file=".env", env_prefix="AINOC_",
+                                      extra="ignore")
 
     # Zabbix
     zabbix_url: str = "http://zabbix-web:8080/api_jsonrpc.php"
@@ -26,6 +29,7 @@ class Settings(BaseSettings):
 
     # Serviço
     webhook_shared_secret: str = ""  # validado no header X-AINOC-Secret
+    bind_host: str = "127.0.0.1"     # usado pela unit systemd (AINOC_BIND_HOST)
     log_level: str = "INFO"
     analysis_history_hours: int = 1
     analysis_events_hours: int = 24

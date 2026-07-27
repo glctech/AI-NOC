@@ -2,7 +2,7 @@
 import json
 import logging
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from ainoc.ai.providers import AIProvider, AIProviderError
 from ainoc.context.collector import IncidentContext
@@ -30,6 +30,35 @@ class FirstAnalysis(BaseModel):
     # Fase 3
     referencias: list[str] = Field(default_factory=list)
 
+    @field_validator("servicos_afetados", "hipoteses_alternativas",
+                     "evidencias", "proximos_passos_n1",
+                     "eventos_correlacionados", "referencias", mode="before")
+    @classmethod
+    def _coerce_list(cls, v):
+        """LLMs às vezes devolvem string onde se espera lista; tolerar."""
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [v.strip()] if v.strip() else []
+        return v
+
+    @field_validator("confianca_pct", mode="before")
+    @classmethod
+    def _coerce_pct(cls, v):
+        """Aceita '85', '85%', 85.0 etc.; fora disso, assume 0."""
+        if isinstance(v, str):
+            v = v.strip().rstrip("%")
+        try:
+            return max(0, min(100, int(float(v))))
+        except (TypeError, ValueError):
+            return 0
+
+    @field_validator("nivel_recomendado", mode="before")
+    @classmethod
+    def _coerce_nivel(cls, v):
+        v = str(v or "N1").strip().upper()
+        return v if v in ("N1", "N2", "N3") else "N1"
+
 
 SYSTEM_PROMPT = f"""Você é um Analista NOC N1 sênior analisando um alerta do Zabbix.
 
@@ -49,6 +78,8 @@ REGRAS INEGOCIÁVEIS:
    playbook_aplicado, nivel_recomendado, referencias
 6. criticidade e urgencia: um de ["baixa", "media", "alta", "critica"].
 7. Escreva em português do Brasil, tom técnico e objetivo.
+   Campos de lista DEVEM ser arrays JSON mesmo com um único item
+   (ex.: "hipoteses_alternativas": ["apenas uma hipótese"]).
 8. CORRELAÇÃO: se o contexto trouxer `problemas_relacionados`, avalie se
    fazem parte do MESMO incidente (causa comum). Liste em
    `eventos_correlacionados` apenas os eventids que você considera parte

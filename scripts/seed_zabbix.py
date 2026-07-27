@@ -63,6 +63,10 @@ def main():
     p.add_argument("--url", default="http://localhost/api_jsonrpc.php")
     p.add_argument("--user", default="Admin")
     p.add_argument("--password", default="zabbix")
+    p.add_argument("--token-only", action="store_true",
+                   help="apenas cria/verifica o API token do servico, "
+                        "SEM criar hosts/triggers de laboratorio "
+                        "(recomendado em producao)")
     p.add_argument("--rotate-token", action="store_true",
                    help="gera novo valor para o token existente "
                         "(INVALIDA o valor anterior usado pelo servico)")
@@ -74,6 +78,11 @@ def main():
 
     api.auth = api.call("user.login", {"username": args.user, "password": args.password})
     print("[i] Autenticado.")
+
+    if args.token_only:
+        print("[i] Modo --token-only: pulando criacao de hosts de laboratorio.")
+        _ensure_token(api, args)
+        return
 
     groups = api.call("hostgroup.get", {"filter": {"name": [GROUP]}})
     groupid = groups[0]["groupid"] if groups else api.call(
@@ -119,6 +128,10 @@ def main():
             })
             print(f"    [+] Trigger '{desc}'")
 
+    _ensure_token(api, args)
+
+
+def _ensure_token(api, args):
     userid = api.call("user.get", {"filter": {"username": [args.user]}})[0]["userid"]
     tokens = api.call("token.get", {"filter": {"name": ["ainoc-service"]}})
     token_value = None
@@ -137,8 +150,11 @@ def main():
         token_value = api.call("token.generate", [tokenid])[0]["token"]
 
     print("\n" + "=" * 56)
-    print("  Laboratorio pronto!")
-    print(f"  Hosts: {', '.join(HOSTS)}")
+    if args.token_only:
+        print("  Token verificado (modo producao).")
+    else:
+        print("  Laboratorio pronto!")
+        print(f"  Hosts: {', '.join(HOSTS)}")
     if token_value:
         print("  Copie para o .env do servico:")
         print(f"  AINOC_ZABBIX_TOKEN={token_value}")

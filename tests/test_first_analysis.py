@@ -127,3 +127,18 @@ async def test_claude_code_provider_binario_inexistente():
     provider = ClaudeCodeProvider(binary="/nao/existe/claude")
     with pytest.raises(AIProviderError, match="não encontrado"):
         await provider.complete("s", "u")
+
+
+def test_schema_tolera_string_em_campo_de_lista_e_pct_texto():
+    """Reprodução do caso real: LLM devolveu string em hipoteses_alternativas."""
+    from ainoc.analysis.first_analysis import FirstAnalysis
+    data = dict(VALID_RESPONSE)
+    data["hipoteses_alternativas"] = "Não é possível descartar job sem evidência."
+    data["evidencias"] = None
+    data["confianca_pct"] = "85%"
+    data["nivel_recomendado"] = "n2"
+    a = FirstAnalysis.model_validate(data)
+    assert a.hipoteses_alternativas == ["Não é possível descartar job sem evidência."]
+    assert a.evidencias == []
+    assert a.confianca_pct == 85
+    assert a.nivel_recomendado == "N2"

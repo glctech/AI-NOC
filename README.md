@@ -73,6 +73,26 @@ invoca o CLI com `--bare`, que exige credencial explícita.
   (`--kb` gera uma nota em `kb/aprendizado/` que vira conhecimento futuro).
 - `ainoc kb status` mostra chunks indexados, incidentes e precisão da IA.
 
+## Novidades da 0.6.0
+
+**Atribuição de responsável:** `ainoc atribuir <eventid> <usuario>` (ou
+`POST /assign`) registra quem assumiu a tratativa, publica ACK
+"[NOC AI] Atribuído a: ..." no problem, e o responsável passa a aparecer nos
+incidentes semelhantes e nas notas de aprendizado da KB — o histórico responde
+"quem tratou disso da última vez". **KB ampliada:** runbooks Linux de disco,
+memória e host down/rede inclusos. **Instalador multi-distro:** Debian/Ubuntu
+(apt) e RHEL/Rocky/Alma/Oracle (dnf/yum), com orientação para firewalld.
+
+## Novidades da 0.5.0 (revisão geral)
+
+Correlação com chamada em lote à API (antes: até 100 chamadas por análise);
+debounce liberado automaticamente quando a análise falha; comparação do secret
+do webhook em tempo constante; erro de configuração do `.env` agora gera
+mensagem clara no log em vez de traceback; eventid não numérico do teste do
+media type é respondido sem entrar na fila; `ainoc restart`/`health` aguardam
+o serviço subir; e novos comandos `ainoc token <valor>` e
+`ainoc env set CHAVE VALOR` para editar o `.env` sem abrir editor.
+
 ## Desenvolvimento
 
 ```bash

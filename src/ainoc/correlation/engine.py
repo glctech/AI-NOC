@@ -66,6 +66,7 @@ class CorrelationEngine:
         })
 
         my_tags = _tag_set(ctx.event.get("tags", []))
+        trig_hosts = await self._resolve_hosts_batch(problems)
         related: list[RelatedProblem] = []
 
         for p in problems:
@@ -75,7 +76,7 @@ class CorrelationEngine:
             p_clock = int(p.get("clock", 0))
             same_window = p_clock >= window_from
 
-            p_hosts = await self._problem_hostids(p)
+            p_hosts = trig_hosts.get(p.get("objectid"), set())
             if hostid in p_hosts:
                 reasons.append("mesmo host")
             elif same_window and groupids:
@@ -88,8 +89,12 @@ class CorrelationEngine:
                 delta = abs(event_clock - p_clock)
                 reasons.append(f"proximidade temporal ({delta}s de diferença)")
 
-            # relação exige ao menos um critério forte
-            if any(r.startswith(("mesmo host", "tags")) for r in reasons):
+            # forte: mesmo host exato ou tags em comum
+            # médio: mesmo host group dentro da janela temporal
+            strong = any(r == "mesmo host" or r.startswith("tags")
+                         for r in reasons)
+            medium = any(r.startswith("mesmo host group") for r in reasons)
+            if strong or medium:
                 related.append(RelatedProblem(
                     eventid=p["eventid"], name=p.get("name", ""),
                     host=",".join(sorted(p_hosts)) or "?",
@@ -100,18 +105,17 @@ class CorrelationEngine:
         related.sort(key=lambda r: (-len(r.reasons), -r.clock))
         return related[:10]
 
-    async def _problem_hostids(self, problem: dict) -> set[str]:
-        """Resolve os hostids de um problem via sua trigger (objectid)."""
-        objectid = problem.get("objectid")
-        if not objectid:
-            return set()
+    async def _resolve_hosts_batch(self, problems: list[dict]) -> dict[str, set[str]]:
+        """Uma única chamada resolve os hosts de todas as triggers (evita N+1)."""
+        objectids = sorted({p["objectid"] for p in problems if p.get("objectid")})
+        if not objectids:
+            return {}
         triggers = await self._zbx.call("trigger.get", {
-            "triggerids": [objectid], "output": ["triggerid"],
+            "triggerids": objectids, "output": ["triggerid"],
             "selectHosts": ["hostid"],
         })
-        if not triggers:
-            return set()
-        return {h["hostid"] for h in triggers[0].get("hosts", [])}
+        return {t["triggerid"]: {h["hostid"] for h in t.get("hosts", [])}
+                for t in triggers}
 
 
 def _tag_set(tags: list[dict]) -> set[str]:

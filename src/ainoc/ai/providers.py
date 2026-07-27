@@ -128,8 +128,12 @@ class ClaudeCodeProvider(AIProvider):
             cmd += ["--bare"]
 
         env = os.environ.copy()
-        if self._api_key:
+        if self._bare and self._api_key:
             env["ANTHROPIC_API_KEY"] = self._api_key
+        elif not self._bare:
+            # fora do --bare, a chave de API teria precedência sobre o token
+            # OAuth (CLAUDE_CODE_OAUTH_TOKEN) e quebraria a autenticação
+            env.pop("ANTHROPIC_API_KEY", None)
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -156,12 +160,23 @@ class ClaudeCodeProvider(AIProvider):
                 f"Claude Code excedeu o timeout de {self._timeout}s"
             ) from exc
 
+        out_text = stdout.decode(errors="replace")
         if proc.returncode != 0:
+            # Em headless, o CLI reporta erros no stdout (JSON com is_error)
+            # e sai com código != 0 — a causa real está lá, não no stderr.
+            detail = stderr.decode(errors="replace").strip()
+            try:
+                data = json.loads(out_text)
+                if isinstance(data, dict) and data.get("result"):
+                    detail = str(data["result"])
+            except json.JSONDecodeError:
+                if not detail and out_text.strip():
+                    detail = out_text.strip()
             raise AIProviderError(
                 f"Claude Code saiu com código {proc.returncode}: "
-                f"{stderr.decode(errors='replace')[:300]}"
+                f"{detail[:400] or '(sem mensagem)'}"
             )
-        return parse_claude_code_output(stdout.decode(errors="replace"))
+        return parse_claude_code_output(out_text)
 
 
 def parse_claude_code_output(raw: str) -> str:
