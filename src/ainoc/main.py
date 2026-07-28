@@ -53,7 +53,9 @@ async def lifespan(app: FastAPI):
     app.state.collector = ContextCollector(
         zabbix, settings.analysis_history_hours, settings.analysis_events_hours
     )
-    app.state.analysis = FirstAnalysisService(build_provider(settings))
+    _provider = build_provider(settings)
+    app.state.ai_provider = _provider
+    app.state.analysis = FirstAnalysisService(_provider)
     app.state.debouncer = Debouncer(settings.debounce_minutes)
     app.state.correlation = CorrelationEngine(
         zabbix, settings.correlation_window_minutes)
@@ -159,6 +161,7 @@ async def _analyze_and_ack(app: FastAPI, eventid: str, ctx) -> None:
         else analysis.__dict__,
         objectid=ctx.event.get("objectid", ""),
         status=status,
+        model=getattr(app.state.ai_provider, "model_name", ""),
     )
     logger.info("ACK publicado no evento %s (confiança=%d%% nível=%s)",
                 eventid, analysis.confianca_pct, analysis.nivel_recomendado)
@@ -194,6 +197,12 @@ async def api_kb_docs() -> dict:
         docs[c.source] = docs.get(c.source, 0) + 1
     return {"docs": [{"nome": k, "trechos": v} for k, v in sorted(docs.items())],
             "total_chunks": app.state.kb.size}
+
+
+@app.get("/api/calibration")
+async def api_calibration() -> dict:
+    """Confiança declarada pela IA vs. acerto real — a métrica anti-alucinação."""
+    return await app.state.store.calibration()
 
 
 @app.get("/api/kb/learnings")

@@ -71,6 +71,9 @@ class IncidentStore:
             if "status" not in cols:
                 con.execute("ALTER TABLE incidents ADD COLUMN status TEXT "
                             "NOT NULL DEFAULT 'ok'")
+            if "model" not in cols:
+                con.execute("ALTER TABLE incidents ADD COLUMN model TEXT "
+                            "NOT NULL DEFAULT ''")
 
     def _conn(self) -> sqlite3.Connection:
         con = sqlite3.connect(self._path, timeout=10)
@@ -80,17 +83,18 @@ class IncidentStore:
     # ------------------------------------------------ escrita
     async def save_incident(self, eventid: str, host: str, trigger_name: str,
                             severity: str, analysis: dict,
-                            objectid: str = "", status: str = "ok") -> None:
+                            objectid: str = "", status: str = "ok",
+                            model: str = "") -> None:
         def _run():
             with self._conn() as con:
                 con.execute(
                     """INSERT OR REPLACE INTO incidents
                        (eventid, host, trigger_name, severity, analysis_json,
-                        created_at, objectid, status)
-                       VALUES (?,?,?,?,?,?,?,?)""",
+                        created_at, objectid, status, model)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
                     (eventid, host, trigger_name, severity,
                      json.dumps(analysis, ensure_ascii=False),
-                     int(time.time()), objectid, status),
+                     int(time.time()), objectid, status, model),
                 )
         await asyncio.to_thread(_run)
 
@@ -252,6 +256,75 @@ class IncidentStore:
                 if len(out) >= limit:
                     break
             return out
+        return await asyncio.to_thread(_run)
+
+    async def calibration(self) -> dict:
+        """Calibração: confiança declarada pela IA vs. acerto real (feedback).
+
+        Agrupa incidentes com feedback em faixas de confiança e mede, em cada
+        faixa, quantas vezes a hipótese foi confirmada. Também calcula o
+        Brier score e o erro de calibração (ECE) — global e por modelo.
+        """
+        def _run() -> dict:
+            with self._conn() as con:
+                rows = con.execute(
+                    """SELECT i.analysis_json, i.model, f.hipotese_correta
+                       FROM incidents i JOIN feedback f USING (eventid)
+                       WHERE i.status = 'ok' AND f.hipotese_correta IS NOT NULL"""
+                ).fetchall()
+            # faixas de 20 pontos
+            bands = [(0, 20), (20, 40), (40, 60), (60, 80), (80, 101)]
+            def novo():
+                return {f"{lo}-{hi if hi <= 100 else 100}": {"n": 0, "acertos": 0,
+                        "conf_soma": 0.0} for lo, hi in bands}
+            geral = novo()
+            por_modelo: dict[str, dict] = {}
+            brier_sum = 0.0
+            total = 0
+            for r in rows:
+                try:
+                    conf = int(json.loads(r["analysis_json"]).get("confianca_pct", 0))
+                except (TypeError, ValueError):
+                    continue
+                acerto = 1 if r["hipotese_correta"] else 0
+                p = max(0, min(100, conf)) / 100.0
+                brier_sum += (p - acerto) ** 2
+                total += 1
+                modelo = r["model"] or "(desconhecido)"
+                por_modelo.setdefault(modelo, novo())
+                for lo, hi in bands:
+                    if lo <= conf < hi:
+                        key = f"{lo}-{hi if hi <= 100 else 100}"
+                        for tgt in (geral, por_modelo[modelo]):
+                            tgt[key]["n"] += 1
+                            tgt[key]["acertos"] += acerto
+                            tgt[key]["conf_soma"] += conf
+                        break
+
+            def resumir(bandas: dict) -> dict:
+                faixas = []
+                ece_num = 0.0
+                n_tot = sum(b["n"] for b in bandas.values())
+                for nome, b in bandas.items():
+                    if b["n"] == 0:
+                        faixas.append({"faixa": nome, "n": 0,
+                                       "acerto_real": None, "conf_media": None})
+                        continue
+                    acerto_real = round(100 * b["acertos"] / b["n"], 1)
+                    conf_media = round(b["conf_soma"] / b["n"], 1)
+                    faixas.append({"faixa": nome, "n": b["n"],
+                                   "acerto_real": acerto_real,
+                                   "conf_media": conf_media})
+                    ece_num += b["n"] * abs(conf_media - acerto_real)
+                ece = round(ece_num / n_tot, 1) if n_tot else None
+                return {"faixas": faixas, "ece": ece, "n": n_tot}
+
+            resultado = resumir(geral)
+            resultado["brier"] = round(brier_sum / total, 3) if total else None
+            resultado["por_modelo"] = {
+                m: resumir(b) for m, b in sorted(por_modelo.items())
+            }
+            return resultado
         return await asyncio.to_thread(_run)
 
     async def stats(self) -> dict:

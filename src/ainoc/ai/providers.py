@@ -19,6 +19,8 @@ class AIProviderError(Exception):
 
 
 class AIProvider(ABC):
+    model_name: str = ""  # rótulo do modelo efetivo (para calibração)
+
     @abstractmethod
     async def complete(self, system: str, user: str) -> str:
         """Retorna o texto bruto da resposta do modelo."""
@@ -41,6 +43,7 @@ class AnthropicProvider(AIProvider):
     def __init__(self, api_key: str, model: str,
                  max_tokens: int = 2000, timeout: float = 60.0):
         self._model = model
+        self.model_name = "anthropic:" + model
         self._max_tokens = max_tokens
         self._client = httpx.AsyncClient(
             base_url="https://api.anthropic.com",
@@ -69,6 +72,7 @@ class OpenAICompatProvider(AIProvider):
     def __init__(self, base_url: str, api_key: str, model: str,
                  max_tokens: int = 2000, timeout: float = 60.0):
         self._model = model
+        self.model_name = "openai_compat:" + model
         self._max_tokens = max_tokens
         headers = {"content-type": "application/json"}
         if api_key:
@@ -113,6 +117,7 @@ class ClaudeCodeProvider(AIProvider):
         self._timeout = timeout
         self._bare = bare
         self._api_key = api_key
+        self.model_name = "claude_code:" + (model or "default")
 
     async def complete(self, system: str, user: str) -> str:
         cmd = [
