@@ -130,7 +130,8 @@ async def _analyze_and_ack(app: FastAPI, eventid: str, ctx) -> None:
         " ".join(f'{t.get("tag")} {t.get("value", "")}'
                  for t in ctx.event.get("tags", [])),
     ]))
-    kb_excerpts = app.state.kb.search(query, settings.rag_top_k)
+    kb_excerpts = app.state.kb.search(query, settings.rag_top_k,
+                                      include_learnings=True)
     similar = await app.state.store.find_similar(
         query, exclude_eventid=eventid, top_k=settings.rag_top_k)
     if kb_excerpts:

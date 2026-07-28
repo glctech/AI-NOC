@@ -13,6 +13,25 @@ from pathlib import Path
 
 from ainoc.rag.indexer import score_texts  # ranking lexical compartilhado
 
+# causas que não representam conhecimento real (testes, vazias, sem conclusão)
+_TRIVIAL_CAUSES = {"teste", "test", "apenas teste", "so teste", "só teste",
+                   "n/a", "na", "-", "sem causa", "x", "xx", "xxx", "asd"}
+
+
+def _is_trivial(causa: str, solucao: str) -> bool:
+    c = (causa or "").strip().lower()
+    if not c:
+        return True
+    if c in _TRIVIAL_CAUSES:
+        return True
+    if c.startswith("não há evidências suficientes") \
+            or c.startswith("nao ha evidencias suficientes"):
+        return True
+    # causa muito curta e sem solução: provavelmente placeholder
+    if len(c) < 6 and not (solucao or "").strip():
+        return True
+    return False
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS incidents (
     eventid       TEXT PRIMARY KEY,
@@ -202,23 +221,37 @@ class IncidentStore:
                 rows = con.execute(
                     """SELECT f.eventid, f.hipotese_correta, f.causa_real,
                               f.solucao, f.created_at,
-                              i.trigger_name, i.host,
+                              i.trigger_name, i.host, i.analysis_json,
                               a.usuario AS tratado_por
                        FROM feedback f
                        JOIN incidents i USING (eventid)
                        LEFT JOIN assignments a USING (eventid)
-                       ORDER BY f.created_at DESC LIMIT ?""", (limit,),
+                       ORDER BY f.created_at DESC LIMIT ?""",
+                    (limit * 4,),  # margem para o filtro de ruído
                 ).fetchall()
-            return [{
-                "eventid": r["eventid"],
-                "trigger": r["trigger_name"], "host": r["host"],
-                "hipotese_correta": (None if r["hipotese_correta"] is None
-                                     else bool(r["hipotese_correta"])),
-                "causa_real": r["causa_real"] or "",
-                "solucao": r["solucao"] or "",
-                "tratado_por": r["tratado_por"] or "",
-                "created_at": r["created_at"],
-            } for r in rows]
+            out = []
+            for r in rows:
+                if _is_trivial(r["causa_real"], r["solucao"]):
+                    continue
+                try:
+                    playbook = json.loads(r["analysis_json"]).get(
+                        "playbook_aplicado", "")
+                except (TypeError, ValueError):
+                    playbook = ""
+                out.append({
+                    "eventid": r["eventid"],
+                    "trigger": r["trigger_name"], "host": r["host"],
+                    "playbook": playbook,
+                    "hipotese_correta": (None if r["hipotese_correta"] is None
+                                         else bool(r["hipotese_correta"])),
+                    "causa_real": r["causa_real"] or "",
+                    "solucao": r["solucao"] or "",
+                    "tratado_por": r["tratado_por"] or "",
+                    "created_at": r["created_at"],
+                })
+                if len(out) >= limit:
+                    break
+            return out
         return await asyncio.to_thread(_run)
 
     async def stats(self) -> dict:

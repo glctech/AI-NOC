@@ -67,6 +67,7 @@ class Chunk:
     source: str    # nome do arquivo
     section: str   # último heading visto
     text: str
+    is_learning: bool = False  # nota gerada por feedback (tem painel próprio)
 
     def to_prompt_dict(self, score: float) -> dict:
         return {"fonte": self.source, "secao": self.section,
@@ -130,11 +131,12 @@ class KnowledgeBase:
         """Divide por headings markdown; quebra seções longas por parágrafo."""
         chunks: list[Chunk] = []
         section, buf = "", ""
+        is_learning = source.startswith("evento_")
 
         def flush():
             nonlocal buf
             if buf.strip():
-                chunks.append(Chunk(source, section, buf.strip()))
+                chunks.append(Chunk(source, section, buf.strip(), is_learning))
             buf = ""
 
         for line in text.splitlines():
@@ -148,10 +150,15 @@ class KnowledgeBase:
         flush()
         return chunks
 
-    def search(self, query: str, top_k: int = 3) -> list[dict]:
-        ranked = score_texts(query, [c.text + " " + c.section
-                                     for c in self._chunks], top_k)
-        return [self._chunks[i].to_prompt_dict(score) for i, score in ranked]
+    def search(self, query: str, top_k: int = 3,
+               include_learnings: bool = False) -> list[dict]:
+        pool = [(i, c) for i, c in enumerate(self._chunks)
+                if include_learnings or not c.is_learning]
+        if not pool:
+            return []
+        idx_map = [i for i, _ in pool]
+        ranked = score_texts(query, [c.text + " " + c.section for _, c in pool], top_k)
+        return [self._chunks[idx_map[i]].to_prompt_dict(score) for i, score in ranked]
 
     def add_note(self, filename: str, content: str) -> Path:
         """Grava uma nota de aprendizado na KB e reindexa."""
