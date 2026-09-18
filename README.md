@@ -4,6 +4,12 @@ Serviço externo (Python 3.10+ / FastAPI) que atua como Analista NOC N1:
 recebe Problems do Zabbix via webhook, coleta contexto pela API oficial,
 gera primeira análise com IA e publica ACK `[NOC AI]` no evento.
 
+## Tela
+
+<img width="1715" height="761" alt="image" src="https://github.com/user-attachments/assets/cacf1a08-4cba-41de-a7a3-c15b07d7b0ee" />
+
+
+
 ## Instalação no laboratório (Ubuntu 22.04/24.04)
 
 ```bash
